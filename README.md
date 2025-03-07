@@ -8,7 +8,7 @@ The code is under MIT Licence but please refer to and cite the above paper if yo
 
 ## Disclaimer on the packages
 
-The folder "Source" contains two python package (), which contains some general conformal prediction codes. They can be found in A. Marandon page: https://github.com/arianemarandon/infoconf.
+The folder "Source" contains two python package (black_boxes.py and nn.py), which contains some general codes for machine learning algorithms. They can be found in A. Marandon page: https://github.com/arianemarandon/infoconf, and are based on code from the paper "Classification with Valid and Adaptive Coverage" by Romano, Sesia and Candès (Neurips 2020).
 
 ## Folder: "Python_RealData"
 
