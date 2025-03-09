@@ -12,7 +12,7 @@ The folder "Source" contains two python package (black_boxes.py and nn.py), whic
 
 ## Folder: "Python_RealData"
 
-This folder contains some general code to use the batch conformal prediction methodology, with the various procedure decribed in the paper, some applications on the CIFAR and USPS dataset, and the code to obtain the illustrations on real data sets (Section 4.2). The notebook "Python_Batch_GHRS25.ipynb" contains the general methodology and the experiments on the USPS and CIFAR datset. Inside the folder "Illustration", the notebook "Illustration_AISTAS25.ipynb" contains the code to make the illustration in the paper "Powerful batch conformal prediction for classification". The ".npy" are the result of some experiments donne with the codes from "Python_Batch_GHRS25.ipynb".
+This folder contains some general code to use the batch conformal prediction methodology, with the various procedure decribed in the paper, some applications on the CIFAR and USPS dataset, and the code to obtain the illustrations on real data sets (Section 4.2). The notebook "Python_Batch_GHRS25.ipynb" the experiments on the USPS and CIFAR datset. The python file "GeneralBatchCode.py" contains the general methodology and the file "LargeSampleCode.py" contains the method to compare the different methods with Monte-Carlo simulations. Inside the folder "Illustration", the notebook "Illustration_AISTAS25.ipynb" contains the code to make the illustration in the paper "Powerful batch conformal prediction for classification". The ".npy" are the result of some experiments donne with the codes from "Python_Batch_GHRS25.ipynb".
 
 ## Folder: "R_SyntheticData"
 
