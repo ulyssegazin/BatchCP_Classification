@@ -1,0 +1,345 @@
+---
+title: "Numerical experimets: Simulation results for large batches of test points"
+date: "`r Sys.Date()`"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Vignette Title}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>"
+)
+```
+
+
+## A stylized example
+
+We consider a Guassian mixture model with $K=2$ components, where each component is bivariate normal. The centers for components 1,2 are, respectively, (0,0), (SNR,0). So the overlap between components is larger as SNR decreases. 
+
+We estimate the probability of being in each class with a support vector classifier implemented by the e1071 R package.
+
+
+## Set up
+
+
+Install and load the required R packages:
+
+```{r, results='hide', message=F, warning=F, error=F, comment=NA}
+library(e1071)
+library(MASS)
+library(xtable)
+set.seed(123) #for reproducibility
+```
+
+
+
+## Functions for data generations
+```{r, eval = TRUE}
+sample_Y = function(n, pi){
+  
+  y = rmultinom(n, size = 1, prob = pi)
+  ycat = 1:length(pi)
+  Y = as.factor(apply(y, 2, function(u){ycat[u==1]})) 
+
+  return(Y)
+
+}
+
+
+sample_X = function(Y, SNR,  withplot = FALSE){
+  
+  X = matrix(NA, nrow = length(Y),ncol =2)  
+  if(length(which(Y==1))>0){
+    X1 =mvrnorm(sum(Y==1),c(0,0), Sigma = diag(rep(1,2)))
+    X[which(Y==1),]=X1
+  }  
+  if (length(which(Y==2))>0){
+    X2 = mvrnorm(sum(Y==2),c(SNR,0), Sigma = diag(rep(1,2)))
+    X[which(Y==2),]=X2
+  }
+  if (length(which(Y==3))>0){
+    X3 = mvrnorm(sum(Y==3),c(SNR,SNR), Sigma = diag(rep(1,2)))
+    X[which(Y==3),]=X3
+  }
+  if (withplot){
+    plot(X1[,1],X1[,2], type = "p", xlim = c(min(X), max(X)), ylim = c(min(X), max(X)))
+    points(X2[,1],X2[,2], col = "red")
+    points(X3[,1],X3[,2], col = "blue")
+  }
+ return(X)
+  
+}
+
+
+score.hat = function(X, svmfit){
+  
+  temp = attributes(predict(svmfit , data.frame(x = X),probability = TRUE))$probabilities
+  
+
+  K = dim(temp)[2]
+  Shat = matrix(NA, nrow = dim(temp)[1], ncol = K)
+  for (k in 1:K){
+    Shat[,k] = as.vector(temp[,as.numeric(colnames(temp))==k]) #conformity scores: the larger the value the more likely from that class. 
+  }
+  return(Shat)
+
+}
+
+
+permtest_indices  = function(big_vec, small_mat, B) {
+  # Get dimensions of small_mat
+  M <- ncol(small_mat)
+  len_small_vec <- nrow(small_mat)
+  
+  # Initialize array to store results
+  samples_array <- array(NA, dim = c(B, len_small_vec, M))
+  
+  for (m in 1:M) {
+    small_vec <- small_mat[, m]
+    combined_vec <- c(big_vec, small_vec)
+    freq_table <- table(small_vec)
+    
+    for (b in 1:B) {
+      samples_array[b, , m] <- unlist(lapply(names(freq_table), function(k) {
+        sample(which(combined_vec == as.numeric(k)), freq_table[k])
+      }))
+    }
+  }
+  
+  return(samples_array)
+}
+
+
+aux = function(res, mat,alpha,ntest){
+  if (sum(res>alpha)==0){#post-process: the setting where the pvalue is largest
+    pointprediction = table(mat[, which(res==max(res))])
+    out=c(pointprediction[1],pointprediction[2])
+    return(out)
+  }
+  return(range((0:ntest)[res>alpha]))
+}
+
+```
+
+
+
+
+## Simulations
+
+
+### For each SNR, compare the  number of non-rejected vectors of labels for Simes and Bonferroni (smaller is better)
+
+```{r, eval = TRUE}
+
+
+simul = function(Ytest,B=10000){
+
+  
+  
+
+
+
+#class conditional data generation: the labels of Ycal and Ytest are fixed in advance. 
+Ycal = c(rep(1,400), rep(2,400))
+
+alpha=0.1 
+
+K=2
+pi = rep(1/K,K)
+ntrain = 1000
+Ytrain = sample_Y(ntrain, pi)
+
+
+ncal = length(Ycal)
+ntest = length(Ytest)
+
+
+SNRvec=c(1,1.5, 2,2.5,  3, 3.5, 4, 4.5)
+lambda = 200/401
+
+
+
+
+
+
+#for the LRT, the nperm subsets from the n+m examples to take for each intersection null. 
+mat <- matrix(2, nrow = ntest , ncol = ntest  + 1)  # Start with all 2s
+  for (j in 1:(ntest  + 1)) {
+    if (j > 1) {
+      mat[1:(j - 1), j] <- 1  # Set the first (j-1) rows in column j to 1
+    }
+  }
+nperm =400 
+forpermtest = permtest_indices(Ycal, mat, nperm)
+
+  
+  
+FWERmat = LB1mat =LB2mat=nontrivialprobLB1mat=nontrivialprobLB2mat=  matrix(NA,nrow = length(SNRvec), ncol = 3)
+colnames(FWERmat) = colnames(LB1mat)= colnames(LB2mat) = c("Bonf","Simes",  "mod Simes")
+
+
+for (SNR in SNRvec){
+Xtrain = sample_X(Ytrain, SNR,  withplot= FALSE)
+traindat <- data.frame(x = Xtrain, y = Ytrain)
+svmfit <- svm(y~., data = traindat , kernel = "linear", probability = TRUE)
+
+
+
+
+
+
+
+VmodifiedSimes=VBonf=VSimes= rep(NA, B)
+LBmodifiedSimes=LBBonf= LBSimes =  matrix(NA,nrow = B, ncol=2)
+
+runtimemat =matrix(NA,nrow = B, ncol = 3)
+
+
+for (b in 1:B){
+
+  
+  Xcal = sample_X(Ycal, SNR)
+  Scalhat = score.hat(Xcal, svmfit) 
+  
+  Xtest = sample_X(Ytest, SNR)
+  Stesthat= score.hat(Xtest, svmfit)
+  
+
+  
+  #how good is the prediction
+  svm.pred <- predict(svmfit, Xtest)
+  table(pred = svm.pred, true = Ytest)
+  
+  svm.pred <- predict(svmfit, Xcal)
+  table(pred = svm.pred, true = Ycal)
+
+  #the p-value for testing the null hypothesis the example is in category  k  in the test sample  
+condpval = matrix(NA, nrow = ntest, ncol = K)
+
+for (k in 1:K){
+  
+  sub = which(Ycal==k)
+  condpval[,k] = sapply(Stesthat[,k],function(x){ (1+sum(Scalhat[sub,k] <=x))/(length(sub)+1)})
+}
+
+#the worst case p-values to combine for each distribution of classes in mat
+p1 = sort(condpval[,1], decreasing= TRUE)
+p2 = sort(condpval[,2])
+pmat = matrix(NA, nrow = ntest, ncol= ntest+1)
+pmat[,1]= p2
+for (i in 1:(ntest-1)){
+  pmat[,i+1] = c(p1[1:i], p2[(i+1):ntest])
+}
+pmat[,ntest+1]= p1
+
+#modified Simes combination test using Storey
+start_time <- proc.time()
+res = apply(pmat,2,function(x){min(sort(x)*((1/(1-lambda))*(1+sum(x>lambda)))/(1:length(x)))})
+cs  =  aux(res,mat,alpha,ntest)
+LBmodifiedSimes[b,]=c(cs[1], ntest-cs[2])
+end_time <- proc.time()
+runtimemat[b,3] = (end_time-start_time)[3]
+VmodifiedSimes[b] = (sum(Ytest==1)<cs[1]) | (sum(Ytest==2)<(ntest-cs[2]))
+
+#Bonf combination test
+start_time <- proc.time()
+res = apply(pmat,2,function(x){length(x)*min(x)})
+cs  =  aux(res,mat,alpha,ntest)
+LBBonf[b,]=c(cs[1], ntest-cs[2])
+end_time <- proc.time()
+runtimemat[b,1] = (end_time-start_time)[3]
+VBonf[b] = (sum(Ytest==1)<cs[1]) | (sum(Ytest==2)<(ntest-cs[2]))
+
+#Simes combination test
+start_time <- proc.time()
+res = apply(pmat,2,function(x){min(sort(x)*length(x)/(1:length(x)))})
+cs  =  aux(res,mat,alpha,ntest)
+LBSimes[b,]=c(cs[1], ntest-cs[2])
+end_time <- proc.time()
+runtimemat[b,2] = (end_time-start_time)[3]
+VSimes[b] = (sum(Ytest==1)<cs[1]) | (sum(Ytest==2)<(ntest-cs[2]))
+
+
+
+
+
+}#for (b in 1:B){
+
+
+print(paste0("For SNR=", SNR, "the run times were:"))
+print(apply(runtimemat, 2,mean))
+
+
+FWERmat[which(SNRvec==SNR),3] = mean(VmodifiedSimes>0)
+FWERmat[which(SNRvec==SNR),2] = mean(VSimes>0)
+FWERmat[which(SNRvec==SNR),1] = mean(VBonf>0)
+
+
+LB1mat[which(SNRvec==SNR),1] =mean(LBBonf[,1])
+LB2mat[which(SNRvec==SNR),1] =mean(LBBonf[,2])
+
+LB1mat[which(SNRvec==SNR),2] =mean(LBSimes[,1])
+LB2mat[which(SNRvec==SNR),2] =mean(LBSimes[,2])
+LB1mat[which(SNRvec==SNR),3] =mean(LBmodifiedSimes[,1])
+LB2mat[which(SNRvec==SNR),3] =mean(LBmodifiedSimes[,2])
+
+
+nontrivialprobLB1mat[which(SNRvec==SNR),1] =mean(LBBonf[,1]>0)
+nontrivialprobLB2mat[which(SNRvec==SNR),1] =mean(LBBonf[,2]>0)
+
+nontrivialprobLB1mat[which(SNRvec==SNR),2] =mean(LBSimes[,1]>0)
+nontrivialprobLB2mat[which(SNRvec==SNR),2] =mean(LBSimes[,2]>0)
+nontrivialprobLB1mat[which(SNRvec==SNR),3] =mean(LBmodifiedSimes[,1]>0)
+nontrivialprobLB2mat[which(SNRvec==SNR),3] =mean(LBmodifiedSimes[,2]>0)
+
+
+
+
+
+}#for (SNR in SNRvec){
+print(paste0("alpha=",alpha))
+
+print((cbind(SNRvec, FWERmat)))
+
+print((cbind(SNRvec, LB1mat)))
+
+print((cbind(SNRvec, LB2mat)))
+
+print((cbind(SNRvec,  nontrivialprobLB1mat)))
+
+print((cbind(SNRvec,  nontrivialprobLB2mat)))
+
+print(xtable(cbind(SNRvec, LB1mat, LB2mat, nontrivialprobLB1mat, nontrivialprobLB2mat, FWERmat)))
+
+}
+
+
+
+
+
+```
+
+Consider different distributions of Ytest
+
+```{r, eval = TRUE}
+m=200
+
+print("----------Fraction of ones 1--------")
+Ytest = rep(1,m)
+simul(Ytest)
+print("----------Fraction of ones 0.95--------")
+Ytest = c(rep(1,0.95*m), rep(2,0.05*m))#c(rep(1,m/2), rep(2,m/2))
+simul(Ytest)
+print("----------Fraction of ones 0.9--------")
+Ytest = c(rep(1,0.9*m), rep(2,0.1*m))#c(rep(1,m/2), rep(2,m/2))
+simul(Ytest)
+print("----------Fraction of ones 0.7--------")
+Ytest = c(rep(1,0.7*m), rep(2,0.3*m))#c(rep(1,m/2), rep(2,m/2))
+simul(Ytest)
+
+
+```

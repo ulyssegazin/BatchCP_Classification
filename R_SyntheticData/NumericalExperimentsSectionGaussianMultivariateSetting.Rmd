@@ -1,0 +1,514 @@
+---
+title: "Numerical experimets: Gaussian multivariate setting"
+date: "`r Sys.Date()`"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Vignette Title}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>"
+)
+```
+
+
+
+
+## A stylized example
+
+We consider a Guassian mixture model with $K=3$ components, where each component is bivariate normal. The centers for components 1,2,3 are, respectively, (0,0), (SNR,0), (SNR,SNR). So the overlap between components is larger as SNR decreases. 
+
+We estimate the probability of being in each class with a support vector classifier implemented by the e1071 R package.
+
+
+
+## Set up
+
+
+Install and load the required R packages:
+
+```{r, results='hide', message=F, warning=F, error=F, comment=NA}
+library(e1071)
+library(MASS)
+library(xtable)
+set.seed(123) #for reproducibility
+
+```
+
+
+
+## Functions for data generations
+```{r, eval = TRUE}
+sample_Y = function(n, pi){
+  
+  y = rmultinom(n, size = 1, prob = pi)
+  ycat = 1:length(pi)
+  Y = as.factor(apply(y, 2, function(u){ycat[u==1]})) 
+
+  return(Y)
+
+}
+
+
+sample_X = function(Y, SNR, withplot = FALSE){
+
+  X = matrix(NA, nrow = length(Y),ncol =2)  
+  if(length(which(Y==1))>0){
+    X1 =mvrnorm(sum(Y==1),c(0,0), Sigma = diag(rep(1,2)))
+    X[which(Y==1),]=X1
+  }  
+  if (length(which(Y==2))>0){
+    X2 = mvrnorm(sum(Y==2),c(SNR,0), Sigma = diag(rep(1,2)))
+    X[which(Y==2),]=X2
+  }
+  if (length(which(Y==3))>0){
+    X3 = mvrnorm(sum(Y==3),c(SNR,SNR), Sigma = diag(rep(1,2)))
+    X[which(Y==3),]=X3
+  }
+  if (withplot){
+    plot(X1[,1],X1[,2], type = "p", xlim = c(min(X), max(X)), ylim = c(min(X), max(X)))
+    points(X2[,1],X2[,2], col = "red")
+    points(X3[,1],X3[,2], col = "blue")
+  }
+ return(X)
+  
+}
+
+
+score.hat = function(X, svmfit){
+  
+  temp = attributes(predict(svmfit , data.frame(x = X),probability = TRUE))$probabilities
+  
+
+  K = dim(temp)[2]
+  Shat = matrix(NA, nrow = dim(temp)[1], ncol = K)
+  for (k in 1:K){
+    Shat[,k] = as.vector(temp[,as.numeric(colnames(temp))==k]) #conformity scores: the larger the value the more likely from that class. 
+  }
+  return(Shat)
+
+}
+
+
+
+generate_combinations <- function(matrix_mxn) {
+  # Ensure the input is a matrix
+  if (!is.matrix(matrix_mxn)) {
+    stop("Input must be a matrix")
+  }
+  
+  m <- nrow(matrix_mxn)
+  n <- ncol(matrix_mxn)
+  
+  # Get the unique values from each column
+  col_values <- lapply(1:n, function(i) (matrix_mxn[, i]))#unique(matrix_mxn[, i]))
+  
+  # Generate all possible combinations
+  combinations <- do.call(expand.grid, col_values)
+  
+  # Convert each row to a vector
+  result_vectors <- apply(combinations, 1, unlist)
+  
+  # Return the result
+  return(result_vectors)
+}
+
+
+
+
+conservativeSimes <- function(Pmat, alpha = 0.1, adaptive=FALSE, lambda = 0.5) {
+ 
+  m <- nrow(Pmat)
+  K <- ncol(Pmat)
+  res <- matrix(NA, nrow = m + 1, ncol = K)
+ 
+  sorted_Pmat <- matrix(NA, nrow = m, ncol = 2 * K)
+  for (j in 1:K) {
+    sorted_Pmat[, 2*j - 1] <- sort(Pmat[, j], decreasing = TRUE)
+    sorted_Pmat[, 2*j] <- sort(apply(Pmat[, -j], 1, max), decreasing = TRUE)
+  }
+ 
+  w <- m / (1:m)
+ 
+ 
+  for (j in 1:K) {
+    P1 <- sorted_Pmat[, 2*j - 1]
+    P2 <- sorted_Pmat[, 2*j]
+   
+    combined_sorted <- numeric(m)
+   
+    for (i in m:0) {
+      combined_sorted <- sort(c(P1[0:(m - i)], P2[0:i]))
+     
+      if (!adaptive){ res[m - i + 1, j] <- min(w * combined_sorted) } else {
+        m0hat <- ( 1/(1-lambda) ) * ( 1 + sum(combined_sorted >= lambda) )
+        res[m - i + 1, j] <- min((w * (m0hat/m) ) * combined_sorted)
+
+
+      }
+   
+     
+     
+    }
+  }
+ 
+  max_vals <- apply(res, 2, max)
+  for (j in 1:K) {
+    res[which(res[, j] == max_vals[j]), j] <- Inf
+  }
+ 
+  bounds <- apply(res, 2, function(col) range(which(col > alpha)) - 1)
+ 
+  colnames(bounds) <- 1:K
+  rownames(bounds) <- c("LB", "UP")
+ 
+  return(bounds)
+}
+
+
+
+
+
+getbounds = function(res, alpha){
+  if (sum(res>alpha)==1){
+    nonrej  =  allcombmatindices[,res>alpha]
+    return(sapply(1:K, function(k){c(sum(nonrej==k),sum(nonrej==k))}))
+  }
+  if (sum(res>alpha)==0){
+    nonrej = allcombmatindices[,which(res==max(res))[1]]
+    return(sapply(1:K, function(k){c(sum(nonrej==k),sum(nonrej==k))}))
+  }
+  return(sapply(1:K, function(k){range(apply(nonrej==k,2,sum))}))
+}
+
+permtest_indices  = function(big_vec, small_mat, B) {
+  # Get dimensions of small_mat
+  M <- ncol(small_mat)
+  len_small_vec <- nrow(small_mat)
+  
+  # Initialize array to store results
+  samples_array <- array(NA, dim = c(B, len_small_vec, M))
+  
+  for (m in 1:M) {
+    small_vec <- small_mat[, m]
+    combined_vec <- c(big_vec, small_vec)
+    freq_table <- table(small_vec)
+    
+    for (b in 1:B) {
+      samples_array[b, , m] <- unlist(lapply(names(freq_table), function(k) {
+        sample(which(combined_vec == as.numeric(k)), freq_table[k])
+      }))
+    }
+  }
+  
+  return(samples_array)
+}
+
+```
+
+
+
+
+## Simulations
+
+
+```{r, eval = TRUE}
+
+#class conditional data generation: the labels of Ycal and Ytest are fixed in advance. 
+Ycal = c(rep(1,400), rep(2,400), rep(3,400))
+Ytest = c(rep(1,2), rep(2,2), rep(3,2))
+alpha=0.1 
+
+K=3
+pi = rep(1/K,K)
+ntrain = 1000
+Ytrain = sample_Y(ntrain, pi)
+
+
+ncal = length(Ycal)
+ntest = length(Ytest)
+
+
+SNRvec=c(1,1.5, 2,2.5,  3, 3.5, 4, 4.5)
+lambda = 200/401
+
+
+
+allcombmatindices = generate_combinations(rbind(rep(1,ntest), rep(2,ntest), rep(3,ntest)))#ALL THE INTERSECTION HYPOTHESES TESTED
+
+istruenull = apply(allcombmatindices,2,function(x){identical(as.vector(x),as.vector(Ytest))})
+table(istruenull)
+print(allcombmatindices[,which(istruenull==TRUE)])
+
+
+m0vec = rep(NA, dim(allcombmatindices)[2])
+for (j in 1:dim(allcombmatindices)[2]){
+  m0vec[j] = sum(allcombmatindices[,j]==Ytest)
+}
+
+#for the LRT, the nperm subsets from the n+m examples to take for each intersection null. 
+nperm =400 
+forpermtest = permtest_indices(Ycal, allcombmatindices, nperm)
+
+
+
+boundsLRT = boundsFisher = boundsBonf = boundsSimes = boundsconsSimes = boundsoracleSimes =boundsmodSimes = boundsconsmodSimes =  list()
+
+
+
+```
+
+### For each SNR, compare the  number of non-rejected vectors of labels for Simes and Bonferroni (smaller is better)
+
+```{r, eval = TRUE}
+
+
+
+
+ FWERmat = nonrejmat = matrix(NA,nrow = length(SNRvec), ncol = 7)
+colnames(FWERmat) = colnames(nonrejmat) = c("Bonf","Simes",  "mod Simes", "mod Q Simes", "oracle Simes", "Fisher","LRT")
+
+#Report average bounds for class 1 by each method
+UBmat = LBmat = matrix(NA, nrow = length(SNRvec), ncol = 8)
+rownames(UBmat) = rownames(LBmat) = SNRvec
+colnames(UBmat) = colnames(LBmat) = c("Bonf", "Simes", "cons Simes", "oracle Simes", "mod Simes", "cons mod Simes", "Fisher","LRT") 
+
+for (SNR in SNRvec){
+Xtrain = sample_X(Ytrain, SNR,  withplot= FALSE)#XXXX
+traindat <- data.frame(x = Xtrain, y = Ytrain)
+svmfit <- svm(y~., data = traindat , kernel = "linear", probability = TRUE)
+
+
+
+
+B=2000#00
+
+
+VLRT = VFisher = VoracleSimes=VmodifiedQSimes=VmodifiedSimes=VBonf=VSimes= rep(NA, B)
+nonrejLRT = nonrejFisher=nonrejoracleSimes = nonrejmodifiedQSimes=nonrejmodifiedSimes=nonrejBonf= nonrejSimes =  rep(NA,B)
+
+runtimemat =matrix(NA,nrow = B, ncol = 7)
+
+
+for (b in 1:B){
+
+  
+  Xcal = sample_X(Ycal, SNR)
+  Scalhat = score.hat(Xcal, svmfit) 
+  
+  Xtest = sample_X(Ytest, SNR)
+  Stesthat= score.hat(Xtest, svmfit)
+  
+
+  
+  #how good is the prediction
+  svm.pred <- predict(svmfit, Xtest)
+  table(pred = svm.pred, true = Ytest)
+  
+  svm.pred <- predict(svmfit, Xcal)
+  table(pred = svm.pred, true = Ycal)
+
+  #the p-value for testing the null hypothesis the example is in category  k  in the test sample  
+condpval = matrix(NA, nrow = ntest, ncol = K)
+
+for (k in 1:K){
+  
+  sub = which(Ycal==k)
+  condpval[,k] = sapply(Stesthat[,k],function(x){ (1+sum(Scalhat[sub,k] <=x))/(length(sub)+1)})
+}
+
+
+
+allcombmat = generate_combinations(t(condpval))
+
+
+#oracle Simes  combination test
+start_time <- proc.time()
+res = rep(NA, dim(allcombmat)[2])
+for (j in 1:dim(allcombmat)[2]){
+  x = allcombmat[,j]
+  res[j] = m0vec[j]*min(sort(x)/(1:length(x)))
+}
+nonrej  =  allcombmatindices[,res>alpha]
+end_time <- proc.time()
+runtimemat[b,5] = (end_time-start_time)[3]
+
+VoracleSimes[b] = (res[which(istruenull==TRUE)])<=alpha
+nonrejoracleSimes[b] = ifelse(sum(res>alpha)<2,1,dim(nonrej)[2])
+boundsoracleSimes[[b]] = getbounds(res,alpha)
+
+
+
+#Fisher combination test
+start_time <- proc.time()
+res = apply(allcombmat,2,function(x){pchisq(sum(-2*log(x)), df=2*length(x), lower.tail = F) })
+nonrej  =  allcombmatindices[,res>alpha]
+end_time <- proc.time()
+runtimemat[b,6] = (end_time-start_time)[3]
+
+VFisher[b] = (res[which(istruenull==TRUE)])<=alpha
+nonrejFisher[b] = ifelse(sum(res>alpha)<2,1,dim(nonrej)[2])
+boundsFisher[[b]] = getbounds(res, alpha)
+
+#modified Simes using Quantile estimator combination test
+start_time <- proc.time()
+res = apply(allcombmat,2,function(x){(ntest-ceiling(ntest/2)+1)/(1-sort(x)[ceiling(ntest/2)])*min(sort(x)/(1:length(x))) })
+nonrej  =  allcombmatindices[,res>alpha]
+end_time <- proc.time()
+runtimemat[b,4] = (end_time-start_time)[3]
+
+
+VmodifiedQSimes[b] = (res[which(istruenull==TRUE)])<=alpha
+nonrejmodifiedQSimes[b] = ifelse(sum(res>alpha)<2,1,dim(nonrej)[2])
+
+
+#modified Simes combination test using Storey
+start_time <- proc.time()
+res = apply(allcombmat,2,function(x){min(sort(x)*((1/(1-lambda))*(1+sum(x>lambda)))/(1:length(x)))})
+nonrej  =  allcombmatindices[,res>alpha]
+end_time <- proc.time()
+runtimemat[b,3] = (end_time-start_time)[3]
+
+
+VmodifiedSimes[b] = (res[which(istruenull==TRUE)])<=alpha
+nonrejmodifiedSimes[b] = ifelse(sum(res>alpha)<2,1,dim(nonrej)[2])
+#the bounds for Simes combination test
+boundsmodSimes[[b]] = getbounds(res,alpha)
+#the bounds for Simes combination test using the shortcut
+boundsconsmodSimes[[b]] = conservativeSimes(Pmat= condpval, alpha = alpha, adaptive = TRUE, lambda = lambda)
+
+
+
+#Bonf combination test (WASTEFUL COMPUTATIONS)
+start_time <- proc.time()
+res = apply(allcombmat,2,function(x){length(x)*min(x)})
+nonrej =  allcombmatindices[,res>alpha]
+end_time <- proc.time()
+runtimemat[b,1] = (end_time-start_time)[3]
+
+psBonf = which(res>alpha)
+VBonf[b] = (res[which(istruenull==TRUE)])<=alpha
+nonrejBonf[b] = ifelse(sum(res>alpha)<2,1,dim(nonrej)[2])
+#the bounds for Bonf combination test
+boundsBonf[[b]] = getbounds(res, alpha)
+
+
+
+#Simes combination test
+start_time <- proc.time()
+res = apply(allcombmat,2,function(x){min(sort(x)*length(x)/(1:length(x)))})
+nonrej  =  allcombmatindices[,res>alpha]
+end_time <- proc.time()
+runtimemat[b,2] = (end_time-start_time)[3]
+
+
+VSimes[b] = (res[which(istruenull==TRUE)])<=alpha
+nonrejSimes[b] = ifelse(sum(res>alpha)<2,1,dim(nonrej)[2])
+#the bounds for Simes combination test
+boundsSimes[[b]] = getbounds(res,alpha)
+#the bounds for Simes combination test using the shortcut
+boundsconsSimes[[b]] = conservativeSimes(Pmat= condpval, alpha = alpha)
+
+#LRT combination test - not distribution free!
+start_time <- proc.time()
+Shat_combined = rbind(Scalhat, Stesthat)
+res = rep(NA,dim(allcombmat)[2])
+for (i in 1:dim(allcombmat)[2]){
+  Y0 = allcombmatindices[,i]  
+  index = forpermtest[,,i]
+  nulldist = apply(index,1,function(ivec){Shatsub = Shat_combined[ivec,]; forLRT = rep(NA,length(Y0)); Ynull = c(Ycal,Y0)[ivec]; for (j in 1:length(Y0)){forLRT[j] =max(Shatsub[j,])/(Shatsub[j,Ynull[j]])}; return(prod(forLRT))})
+  
+  forLRT = rep(NA,length(Y0)); for (j in 1:length(Y0)){forLRT[j] =max(Stesthat[j,])/(Stesthat[j,Y0[j]])}
+  LRT =prod(forLRT) 
+  res[i] = (1+sum(nulldist>=LRT))/(length(nulldist)+1)#the larger the LRT, the greater the evidence against the null, so reject for large values of the LRT
+}
+nonrej  =  allcombmatindices[,res>alpha]
+end_time <- proc.time()
+runtimemat[b,7] = (end_time-start_time)[3]
+
+VLRT[b] = (res[which(istruenull==TRUE)])<=alpha
+nonrejLRT[b] = ifelse(sum(res>alpha)<2,1,dim(nonrej)[2])
+#the bounds for LRT combination test
+boundsLRT[[b]] = getbounds(res,alpha)
+
+
+
+}#for (b in 1:B){
+
+
+print(paste0("For SNR=", SNR, "the run times were:"))
+print(head(runtimemat))
+print(apply(runtimemat, 2,mean))
+
+LBmat[which(SNRvec==SNR),1] = sum((Reduce("+", boundsBonf) / length(boundsBonf))[1,])
+UBmat[which(SNRvec==SNR),1] = sum((Reduce("+", boundsBonf) / length(boundsBonf))[2,])
+LBmat[which(SNRvec==SNR),2] = sum((Reduce("+", boundsSimes) / length(boundsSimes))[1,])
+UBmat[which(SNRvec==SNR),2] = sum((Reduce("+", boundsSimes) / length(boundsSimes))[2,])
+LBmat[which(SNRvec==SNR),3] = sum((Reduce("+", boundsconsSimes) / length(boundsconsSimes))[1,])
+UBmat[which(SNRvec==SNR),3] = sum((Reduce("+", boundsconsSimes) / length(boundsconsSimes))[2,])
+LBmat[which(SNRvec==SNR),4] = sum((Reduce("+", boundsoracleSimes) / length(boundsoracleSimes))[1,])
+UBmat[which(SNRvec==SNR),4] = sum((Reduce("+", boundsoracleSimes) / length(boundsoracleSimes))[2,])
+LBmat[which(SNRvec==SNR),5] = sum((Reduce("+", boundsmodSimes) / length(boundsmodSimes))[1,])
+UBmat[which(SNRvec==SNR),5] = sum((Reduce("+", boundsmodSimes) / length(boundsmodSimes))[2,])
+LBmat[which(SNRvec==SNR),6] = sum((Reduce("+", boundsconsmodSimes) / length(boundsconsmodSimes))[1,])
+UBmat[which(SNRvec==SNR),6] = sum((Reduce("+", boundsconsmodSimes) / length(boundsconsmodSimes))[2,])
+LBmat[which(SNRvec==SNR),7] = sum((Reduce("+", boundsFisher) / length(boundsFisher))[1,])
+UBmat[which(SNRvec==SNR),7] = sum((Reduce("+", boundsFisher) / length(boundsFisher))[2,])
+LBmat[which(SNRvec==SNR),8] = sum((Reduce("+", boundsLRT) / length(boundsLRT))[1,])
+UBmat[which(SNRvec==SNR),8] = sum((Reduce("+", boundsLRT) / length(boundsLRT))[2,])
+
+
+save("Ycal", "Ytest", "Ytrain", "Xtrain", "alpha",  "VBonf","VSimes", "nonrejBonf", "nonrejSimes", "VmodifiedSimes", "nonrejmodifiedSimes",  "VmodifiedQSimes", "nonrejmodifiedQSimes","VFisher","nonrejFisher","VLRT","nonrejLRT", "VoracleSimes","nonrejoracleSimes","LBmat","UBmat", file = paste0("V0BVNTable2Complement", SNR,paste0("alpha",round(alpha,3)),".Rdata"))
+
+nonrejmat[which(SNRvec==SNR),7] = mean(nonrejLRT)
+nonrejmat[which(SNRvec==SNR),6] = mean(nonrejFisher)
+nonrejmat[which(SNRvec==SNR),5] = mean(nonrejoracleSimes)
+nonrejmat[which(SNRvec==SNR),4] = mean(nonrejmodifiedQSimes)
+nonrejmat[which(SNRvec==SNR),3] = mean(nonrejmodifiedSimes)
+nonrejmat[which(SNRvec==SNR),2] = mean(nonrejSimes)
+nonrejmat[which(SNRvec==SNR),1] = mean(nonrejBonf)
+FWERmat[which(SNRvec==SNR),7] = mean(VLRT>0)
+FWERmat[which(SNRvec==SNR),6] = mean(VFisher>0)
+FWERmat[which(SNRvec==SNR),5] = mean(VoracleSimes>0)
+FWERmat[which(SNRvec==SNR),4] = mean(VmodifiedQSimes>0)
+FWERmat[which(SNRvec==SNR),3] = mean(VmodifiedSimes>0)
+FWERmat[which(SNRvec==SNR),2] = mean(VSimes>0)
+FWERmat[which(SNRvec==SNR),1] = mean(VBonf>0)
+
+
+}#for (SNR in SNRvec){
+print(paste0("alpha=",alpha))
+
+print((cbind(SNRvec, nonrejmat, FWERmat)))
+
+
+print(xtable(cbind(SNRvec, nonrejmat, FWERmat)))
+
+
+
+print("sum of average lower bounds for all classes")
+print(LBmat)
+print("sum of average upper bound for all class")
+print(UBmat)
+print(xtable(cbind(LBmat, UBmat)))
+
+
+#knitr::opts_current$set(out.width = '100%')
+plot(SNRvec,  nonrejmat[,1], col = "red", lwd=3, type="l", ylab = "Prediction region size", xlab = "SNR")
+lines(SNRvec, nonrejmat[,2], col="blue", lwd=3, lty=2)
+lines(SNRvec, nonrejmat[,3], col="black", lwd=3, lty=3)
+lines(SNRvec, nonrejmat[,4], col="green", lwd=3, lty=4)
+lines(SNRvec, nonrejmat[,5], col="cyan", lwd=3, lty=4)
+
+
+
+
+
+```
+
+
+
