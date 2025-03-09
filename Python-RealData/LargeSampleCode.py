@@ -1,3 +1,5 @@
+import GeneralBatchCode
+
 def LocalPowerAndCoverage(alpha,pVal,I,Ncal,Function,GeneralQuantileFunction,nClass,ytest):
     ntest=len(I)
     y=np.zeros(ntest)
